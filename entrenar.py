@@ -46,7 +46,9 @@ joblib.dump(features, 'columnas_modelo.pkl')
 
 X1_train, X1_test, y1_train, y1_test = train_test_split(X1, y1, test_size=0.2, random_state=42, stratify=y1)
 
-modelo_falla = RandomForestClassifier(n_estimators=100, random_state=42, class_weight='balanced')
+# Le decimos que la clase "1" (falla) pesa 20 VECES MÁS que la clase "0" (normal)
+pesos = {0: 1, 1: 20} 
+modelo_falla = RandomForestClassifier(n_estimators=100, random_state=42, class_weight=pesos)
 modelo_falla.fit(X1_train, y1_train)
 
 # Evaluación Modelo 1

@@ -2,9 +2,20 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 import joblib
 import pandas as pd
+from fastapi.middleware.cors import CORSMiddleware
 
 # 1. Inicializar la aplicación FastAPI
 app = FastAPI(title="API de Predicción de Fallas de Maquinaria v2.0")
+
+origins = ["*"]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # 2. Cargar TODOS los modelos y helpers
 try:
@@ -51,25 +62,33 @@ def predecir_falla(datos: DatosMaquina):
     if not modelo_falla or not modelo_tipo_falla:
         return {"error": "Modelos no cargados. Revisa la consola del backend."}
 
-    # 7. Procesar los datos de entrada (IGUAL que en el entrenamiento)
-    input_df = pd.DataFrame([datos.model_dump()])
-    input_dummies = pd.get_dummies(input_df, columns=['Type'])
-    
-    # Alinear las columnas (Paso CRÍTICO)
-    input_final = pd.DataFrame(columns=columnas_modelo)
-    input_final = pd.concat([input_final, input_dummies])
-    input_final = input_final.fillna(0)
-    input_final = input_final[columnas_modelo]
-
     try:
-        # --- PREDICCIÓN MODELO 1 ---
+        # --- PASO A: PRE-PROCESAMIENTO ROBUSTO ---
+
+        # 1. Convertir el JSON de entrada a un DataFrame de una fila
+        input_df = pd.DataFrame([datos.model_dump()])
+
+        # 2. Convertir 'Type' en columnas dummies (Type_L, Type_M, Type_H)
+        input_dummies = pd.get_dummies(input_df, columns=['Type'])
+        
+        # 3. Alinear columnas (¡ESTA ES LA MEJORA CRÍTICA!)
+        # Usamos .reindex() para forzar que el DataFrame de entrada tenga
+        # EXACTAMENTE las mismas columnas (y en el mismo orden) que 'columnas_modelo'.
+        # Rellena con 0 las columnas que falten (ej. 'Type_M' si el input fue 'L').
+        input_final = input_dummies.reindex(columns=columnas_modelo, fill_value=0)
+        
+        # Esta línea extra asegura el orden, aunque .reindex ya debería manejarlo
+        input_final = input_final[columnas_modelo]
+
+        # --- PASO B: PREDICCIÓN CON MODELO 1 (¿Hay Falla?) ---
         prediccion_falla = modelo_falla.predict(input_final)
         probabilidad_falla = modelo_falla.predict_proba(input_final)
         
         resultado_falla = int(prediccion_falla[0])
         confianza = float(probabilidad_falla[0][resultado_falla]) * 100
 
-        # 8. Decidir la respuesta
+        # --- PASO C: DECISIÓN Y RESPUESTA ---
+        
         if resultado_falla == 0:
             # --- CASO: OPERACIÓN NORMAL ---
             return {
@@ -78,27 +97,23 @@ def predecir_falla(datos: DatosMaquina):
                 "tipo_falla_probable": "N/A",
                 "recomendacion": "Continuar operación estándar."
             }
+        
         else:
-            # --- CASO: FALLA PROBABLE ---
+            # --- CASO: FALLA PROBABLE (Llamar al Modelo 2) ---
             
-            # --- PREDICCIÓN MODELO 2 ---
-            # El modelo 2 devuelve un vector, ej: [[1, 0, 0, 1]] (TWF y OSF)
+            # --- PREDICCIÓN MODELO 2 (¿Qué tipo de Falla?) ---
             prediccion_tipo = modelo_tipo_falla.predict(input_final)
             
             falla_str_lista = []
             rec_str_lista = []
             
-            # Iteramos sobre las etiquetas (['TWF', 'HDF', 'PWF', 'OSF'])
             for i, label in enumerate(labels_tipo_falla):
                 if prediccion_tipo[0][i] == 1:
-                    # Usamos el diccionario de recomendaciones
                     recomendacion = RECOMENDACIONES.get(label, "Revisión requerida.")
-                    # El texto "Falla por..." ya está en el diccionario
-                    falla_str_lista.append(recomendacion.split('.')[0]) # Tomamos solo la parte del nombre
-                    rec_str_lista.append(recomendacion.split('.')[1].strip()) # Tomamos solo la recomendación
+                    falla_str_lista.append(recomendacion.split('.')[0]) 
+                    rec_str_lista.append(recomendacion.split('.')[1].strip()) 
 
             if not falla_str_lista:
-                # Si el modelo 1 dijo "falla" pero el 2 no encontró tipo
                 tipo_falla_str = RECOMENDACIONES["OTRA"].split('.')[0]
                 recomendacion_str = RECOMENDACIONES["OTRA"].split('.')[1].strip()
             else:
@@ -112,5 +127,6 @@ def predecir_falla(datos: DatosMaquina):
                 "recomendacion": recomendacion_str
             }
 
+    # Capturar cualquier error inesperado durante la predicción
     except Exception as e:
-        return {"error": f"Error durante la predicción: {str(e)}"}
+        return {"error": f"Error interno durante la predicción: {str(e)}"}
