@@ -4,92 +4,112 @@ import joblib
 import pandas as pd
 
 # 1. Inicializar la aplicación FastAPI
-app = FastAPI(title="API de Predicción de Fallas de Maquinaria")
+app = FastAPI(title="API de Predicción de Fallas de Maquinaria v2.0")
 
-# 2. Cargar el modelo y las columnas al iniciar
-# Esto solo se ejecuta una vez, cuando inicias el servidor
+# 2. Cargar TODOS los modelos y helpers
 try:
-    modelo = joblib.load("modelo_fallas.pkl")
+    # Modelo 1: ¿Hay falla?
+    modelo_falla = joblib.load("modelo_fallas.pkl")
     columnas_modelo = joblib.load("columnas_modelo.pkl")
-    print("Modelo y columnas cargados exitosamente. ¡Listos para predecir!")
+    
+    # Modelo 2: ¿Qué tipo de falla?
+    modelo_tipo_falla = joblib.load("modelo_tipo_falla.pkl")
+    labels_tipo_falla = joblib.load("labels_tipo_falla.pkl")
+    
+    print("Todos los modelos cargados exitosamente. ¡Listos para predecir!")
 except FileNotFoundError:
-    print("Error: Archivos 'modelo_fallas.pkl' o 'columnas_modelo.pkl' no encontrados.")
-    print("Por favor, asegúrate de ejecutar 'entrenar.py' primero.")
-    modelo = None
-    columnas_modelo = None
+    print("Error: Faltan archivos .pkl. Asegúrate de ejecutar 'entrenar.py' primero.")
+    modelo_falla = None
+    modelo_tipo_falla = None
 
-# 3. Definir la estructura de los datos que esperamos recibir
-# Esto es un "contrato": el frontend DEBE enviarnos estos datos.
-# Nota: Usamos los nombres amigables que definimos en el entrenamiento.
+# 3. Diccionario de Recomendaciones (¡Aquí pones tu conocimiento!)
+RECOMENDACIONES = {
+    "TWF": "Falla por Desgaste de Herramienta (TWF). Revisar la herramienta de corte, posible reemplazo necesario.",
+    "HDF": "Falla por Disipación de Calor (HDF). Inspeccionar el sistema de refrigeración y las temperaturas de proceso.",
+    "PWF": "Falla de Potencia (PWF). Verificar la fuente de alimentación y posibles picos de torque.",
+    "OSF": "Falla por Sobreesfuerzo (OSF). Reducir la velocidad de rotación o el torque aplicado.",
+    "OTRA": "Falla Indeterminada. Realizar una inspección general de la máquina."
+}
+
+# 4. Definir la estructura de los datos que esperamos recibir
 class DatosMaquina(BaseModel):
     temp_aire: float
     temp_proceso: float
     velocidad_rotacion: int
     torque: float
     desgaste_herramienta: int
-    Type: str  # El usuario nos enviará "L", "M", o "H"
+    Type: str  # "L", "M", o "H"
 
-    # Ejemplo de cómo se verán los datos que nos envían:
-    # {
-    #   "temp_aire": 301.5,
-    #   "temp_proceso": 310.8,
-    #   "velocidad_rotacion": 1450,
-    #   "torque": 45.3,
-    #   "desgaste_herramienta": 20,
-    #   "Type": "L"
-    # }
-
-
-# 4. Crear el "endpoint" de bienvenida (para probar)
+# 5. Endpoint de bienvenida
 @app.get("/")
 def bienvenida():
-    return {"mensaje": "API del Doctor de Máquinas está funcionando."}
+    return {"mensaje": "API del Doctor de Máquinas v2.0 está funcionando."}
 
-
-# 5. Crear el "endpoint" de predicción
-# Esta es la URL a la que llamará nuestro frontend
+# 6. Endpoint de predicción (Actualizado)
 @app.post("/predecir")
 def predecir_falla(datos: DatosMaquina):
-    if modelo is None or columnas_modelo is None:
-        return {"error": "Modelo no cargado. Revisa la consola del backend."}
+    if not modelo_falla or not modelo_tipo_falla:
+        return {"error": "Modelos no cargados. Revisa la consola del backend."}
 
-    # Convertir los datos de entrada (JSON) a un DataFrame de Pandas
-    # exactamente como lo hicimos en el entrenamiento.
-    input_df = pd.DataFrame([datos.model_dump()]) # Pydantic v2 usa .model_dump()
-
-    # 6. Procesar los datos de entrada IGUAL que en el entrenamiento
-    # Convertir 'Type' en dummies (Type_L, Type_M, Type_H)
+    # 7. Procesar los datos de entrada (IGUAL que en el entrenamiento)
+    input_df = pd.DataFrame([datos.model_dump()])
     input_dummies = pd.get_dummies(input_df, columns=['Type'])
     
-    # 7. Alinear las columnas (¡Paso CRÍTICO!)
-    # Nos aseguramos de que el df de entrada tenga EXACTAMENTE
-    # las mismas columnas, en el mismo orden, que el modelo que entrenamos.
-    # Rellena con 0 las columnas que falten (ej. si el input fue 'L', faltarán 'Type_M')
+    # Alinear las columnas (Paso CRÍTICO)
     input_final = pd.DataFrame(columns=columnas_modelo)
     input_final = pd.concat([input_final, input_dummies])
     input_final = input_final.fillna(0)
-    
-    # Asegurarnos de que el orden sea idéntico
     input_final = input_final[columnas_modelo]
 
-    # 8. Realizar la predicción
     try:
-        prediccion = modelo.predict(input_final)
-        probabilidad = modelo.predict_proba(input_final)
+        # --- PREDICCIÓN MODELO 1 ---
+        prediccion_falla = modelo_falla.predict(input_final)
+        probabilidad_falla = modelo_falla.predict_proba(input_final)
         
-        resultado_prediccion = int(prediccion[0])
-        confianza = float(probabilidad[0][resultado_prediccion]) * 100
-        
-        # 9. Devolver una respuesta clara
-        if resultado_prediccion == 1:
-            return {
-                "prediccion": "FALLA PROBABLE",
-                "confianza": f"{confianza:.2f}%"
-            }
-        else:
+        resultado_falla = int(prediccion_falla[0])
+        confianza = float(probabilidad_falla[0][resultado_falla]) * 100
+
+        # 8. Decidir la respuesta
+        if resultado_falla == 0:
+            # --- CASO: OPERACIÓN NORMAL ---
             return {
                 "prediccion": "OPERACION NORMAL",
-                "confianza": f"{confianza:.2f}%"
+                "confianza": f"{confianza:.2f}%",
+                "tipo_falla_probable": "N/A",
+                "recomendacion": "Continuar operación estándar."
+            }
+        else:
+            # --- CASO: FALLA PROBABLE ---
+            
+            # --- PREDICCIÓN MODELO 2 ---
+            # El modelo 2 devuelve un vector, ej: [[1, 0, 0, 1]] (TWF y OSF)
+            prediccion_tipo = modelo_tipo_falla.predict(input_final)
+            
+            falla_str_lista = []
+            rec_str_lista = []
+            
+            # Iteramos sobre las etiquetas (['TWF', 'HDF', 'PWF', 'OSF'])
+            for i, label in enumerate(labels_tipo_falla):
+                if prediccion_tipo[0][i] == 1:
+                    # Usamos el diccionario de recomendaciones
+                    recomendacion = RECOMENDACIONES.get(label, "Revisión requerida.")
+                    # El texto "Falla por..." ya está en el diccionario
+                    falla_str_lista.append(recomendacion.split('.')[0]) # Tomamos solo la parte del nombre
+                    rec_str_lista.append(recomendacion.split('.')[1].strip()) # Tomamos solo la recomendación
+
+            if not falla_str_lista:
+                # Si el modelo 1 dijo "falla" pero el 2 no encontró tipo
+                tipo_falla_str = RECOMENDACIONES["OTRA"].split('.')[0]
+                recomendacion_str = RECOMENDACIONES["OTRA"].split('.')[1].strip()
+            else:
+                tipo_falla_str = ", ".join(falla_str_lista)
+                recomendacion_str = " ".join(rec_str_lista)
+
+            return {
+                "prediccion": "FALLA PROBABLE",
+                "confianza": f"{confianza:.2f}%",
+                "tipo_falla_probable": tipo_falla_str,
+                "recomendacion": recomendacion_str
             }
 
     except Exception as e:

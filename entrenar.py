@@ -4,7 +4,7 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import accuracy_score, classification_report
 import joblib
 
-print("Iniciando Misión 1: Entrenamiento del Modelo...")
+print("Iniciando Misión 1 (Actualizada): Entrenando AMBOS modelos...")
 
 # 1. Cargar los Datos
 try:
@@ -14,51 +14,74 @@ except FileNotFoundError:
     print("Error: No se encontró el archivo 'machine failure.csv'.")
     exit()
 
-# 2. Limpieza y Preparación de Datos
-# Renombramos columnas para que sean más fáciles de usar
-df = df.rename(columns={
+# 2. Limpieza y Preparación de Datos (General)
+df_procesado = df.rename(columns={
     'Air temperature [K]': 'temp_aire',
     'Process temperature [K]': 'temp_proceso',
     'Rotational speed [rpm]': 'velocidad_rotacion',
     'Torque [Nm]': 'torque',
     'Tool wear [min]': 'desgaste_herramienta'
 })
+df_procesado = pd.get_dummies(df_procesado, columns=['Type'], drop_first=True)
 
-# Quitamos columnas que no ayudan a predecir o que "hacen trampa"
-# (no sabremos el tipo de falla (TWF, HDF...) antes de que ocurra)
-df = df.drop(columns=['UDI', 'Product ID', 'TWF', 'HDF', 'PWF', 'OSF', 'RNF'])
+# Columnas de features (entradas) que usarán AMBOS modelos
+features = [
+    'temp_aire', 'temp_proceso', 'velocidad_rotacion', 'torque', 
+    'desgaste_herramienta', 'Type_L', 'Type_M'
+]
+# Asegurarnos de que todas las columnas de features existan
+for col in features:
+    if col not in df_procesado.columns:
+        df_procesado[col] = 0 # En caso de que Type_L o Type_M no estuvieran en el split
 
-# Convertimos la columna 'Type' (L, M, H) en números
-df_dummies = pd.get_dummies(df, columns=['Type'], drop_first=True)
-print("Datos limpiados y preparados.")
+print(f"Modelos serán entrenados con estas features: {features}")
 
-# 3. Definir nuestro objetivo (X) y lo que queremos predecir (y)
-X = df_dummies.drop(columns=['Machine failure'])  # Todas las columnas MENOS la respuesta
-y = df_dummies['Machine failure']                # Solo la columna de respuesta (0 o 1)
+# 3. --- ENTRENAMIENTO DEL MODELO 1: ¿HAY FALLA? ---
+print("\n--- Entrenando Modelo 1 (Predicción de Falla) ---")
+X1 = df_procesado[features]
+y1 = df_procesado['Machine failure']
 
-# Guardamos los nombres de las columnas en el orden exacto que el modelo espera
-columnas_del_modelo = X.columns.tolist()
-joblib.dump(columnas_del_modelo, 'columnas_modelo.pkl')
-print(f"Modelo entrenado con estas columnas: {columnas_del_modelo}")
+# Guardamos los nombres de las columnas para la API
+joblib.dump(features, 'columnas_modelo.pkl')
 
-# 4. Dividir los datos: 80% para entrenar, 20% para probar
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
+X1_train, X1_test, y1_train, y1_test = train_test_split(X1, y1, test_size=0.2, random_state=42, stratify=y1)
 
-# 5. Elegir y Entrenar el Modelo (Random Forest)
-# class_weight='balanced' es CLAVE porque tienes muy pocas fallas (339 vs 9661)
-modelo = RandomForestClassifier(n_estimators=100, random_state=42, class_weight='balanced')
-print("Entrenando el modelo... (esto puede tomar unos segundos)")
-modelo.fit(X_train, y_train)
-print("¡Modelo entrenado!")
+modelo_falla = RandomForestClassifier(n_estimators=100, random_state=42, class_weight='balanced')
+modelo_falla.fit(X1_train, y1_train)
 
-# 6. Evaluar el Modelo (¿Qué tan bueno es?)
-y_pred = modelo.predict(X_test)
-print("\n--- Evaluación del Modelo ---")
-# Fíjate en la fila "1" (falla), especialmente en 'recall'.
-# Nos dice cuántas fallas reales logramos "atrapar".
-print(classification_report(y_test, y_pred))
+# Evaluación Modelo 1
+y1_pred = modelo_falla.predict(X1_test)
+print("Evaluación Modelo 1 (Falla Sí/No):")
+print(classification_report(y1_test, y1_pred))
 
-# 7. ¡Guardar el Modelo!
-# Este es el archivo que usará FastAPI
-joblib.dump(modelo, 'modelo_fallas.pkl')
-print("\n¡Misión 1 Completa! Modelo guardado en 'modelo_fallas.pkl'")
+joblib.dump(modelo_falla, 'modelo_fallas.pkl')
+print("¡Modelo 1 ('modelo_fallas.pkl') guardado!")
+
+
+# 4. --- ENTRENAMIENTO DEL MODELO 2: ¿QUÉ TIPO DE FALLA? ---
+print("\n--- Entrenando Modelo 2 (Tipo de Falla) ---")
+
+# Filtramos solo las filas donde SÍ hubo falla
+df_solo_fallas = df_procesado[df_procesado['Machine failure'] == 1].copy()
+
+# Definimos las entradas (X2) y las salidas (y2)
+# Las entradas son las mismas que antes
+X2 = df_solo_fallas[features]
+# Las salidas son las columnas de tipo de falla
+# RNF (Random No Failure) no nos interesa predecir
+labels_tipo_falla = ['TWF', 'HDF', 'PWF', 'OSF']
+y2 = df_solo_fallas[labels_tipo_falla]
+
+if len(X2) > 0:
+    # Este modelo predice múltiples etiquetas a la vez (ej: [1, 0, 1, 0])
+    modelo_tipo_falla = RandomForestClassifier(n_estimators=100, random_state=42)
+    modelo_tipo_falla.fit(X2, y2)
+
+    joblib.dump(modelo_tipo_falla, 'modelo_tipo_falla.pkl')
+    # Guardamos los nombres de las etiquetas que predice
+    joblib.dump(labels_tipo_falla, 'labels_tipo_falla.pkl')
+    print("¡Modelo 2 ('modelo_tipo_falla.pkl') guardado!")
+else:
+    print("No se encontraron datos de fallas para entrenar el modelo 2.")
+
+print("\n¡Misión 1 (Actualizada) Completa!")
