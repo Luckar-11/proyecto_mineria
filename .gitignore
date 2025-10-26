@@ -5,10 +5,6 @@ venv/
 __pycache__/
 *.pyc
 
-# Ignorar los datos crudos. Estos se comparten por otro medio
-# (Drive, Slack, etc.) porque pueden ser privados o muy grandes.
-*.csv
-
 # Ignorar los modelos entrenados.
 # ¡Estos se GENERAN ejecutando el script de entrenamiento!
 *.pkl
